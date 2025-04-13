@@ -4,6 +4,7 @@ use crate::sinks::prelude::*;
 use lapin::{options::ConfirmSelectOptions, BasicProperties};
 use serde::Serialize;
 use std::sync::Arc;
+use tokio::sync::RwLock;
 
 use super::{
     config::{AmqpPropertiesConfig, AmqpSinkConfig},
@@ -27,7 +28,8 @@ pub(super) struct AmqpEvent {
 }
 
 pub(super) struct AmqpSink {
-    pub(super) channel: Arc<lapin::Channel>,
+    pub(super) channel: Arc<RwLock<lapin::Channel>>,
+    config: AmqpSinkConfig,
     exchange: Template,
     routing_key: Option<Template>,
     properties: Option<AmqpPropertiesConfig>,
@@ -56,10 +58,11 @@ impl AmqpSink {
         let encoder = crate::codecs::Encoder::<()>::new(serializer);
 
         Ok(AmqpSink {
-            channel: Arc::new(channel),
-            exchange: config.exchange,
-            routing_key: config.routing_key,
-            properties: config.properties,
+            channel: Arc::new(RwLock::new(channel)),
+            config: config.clone(),
+            exchange: config.exchange.clone(),
+            routing_key: config.routing_key.clone(),
+            properties: config.properties.clone(),
             transformer,
             encoder,
         })
@@ -116,6 +119,7 @@ impl AmqpSink {
         };
         let service = ServiceBuilder::new().service(AmqpService {
             channel: Arc::clone(&self.channel),
+            config: self.config.connection.clone(),
         });
 
         input

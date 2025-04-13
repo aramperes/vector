@@ -13,6 +13,7 @@ use crate::{
 use config::AmqpPropertiesConfig;
 use futures::StreamExt;
 use std::{collections::HashSet, sync::Arc, time::Duration};
+use tokio::sync::RwLock;
 use vector_lib::{config::LogNamespace, event::LogEvent};
 
 pub fn make_config() -> AmqpSinkConfig {
@@ -38,7 +39,9 @@ async fn healthcheck() {
     config.exchange = Template::try_from(exchange.as_str()).unwrap();
     await_connection(&config.connection).await;
     let (_conn, channel) = config.connection.connect().await.unwrap();
-    super::config::healthcheck(Arc::new(channel)).await.unwrap();
+    super::config::healthcheck(Arc::new(RwLock::new(channel)))
+        .await
+        .unwrap();
 }
 
 #[tokio::test]

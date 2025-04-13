@@ -1,14 +1,19 @@
 //! The main tower service that takes the request created by the request builder
 //! and sends it to `AMQP`.
+use crate::amqp::AmqpConfig;
 use crate::sinks::prelude::*;
 use bytes::Bytes;
 use futures::future::BoxFuture;
-use lapin::{options::BasicPublishOptions, BasicProperties};
+use lapin::{
+    options::{BasicPublishOptions, ConfirmSelectOptions},
+    BasicProperties, ChannelState,
+};
 use snafu::Snafu;
 use std::{
     sync::Arc,
     task::{Context, Poll},
 };
+use tokio::sync::RwLock;
 
 /// The request contains the data to send to `AMQP` together
 /// with the information need to route the message.
@@ -79,7 +84,9 @@ impl DriverResponse for AmqpResponse {
 
 /// The tower service that handles the actual sending of data to `AMQP`.
 pub(super) struct AmqpService {
-    pub(super) channel: Arc<lapin::Channel>,
+    pub(super) channel: Arc<RwLock<lapin::Channel>>,
+
+    pub(super) config: AmqpConfig,
 }
 
 #[derive(Debug, Snafu)]
@@ -89,6 +96,11 @@ pub(super) enum AmqpError {
 
     #[snafu(display("Failed AMQP request: {}", error))]
     DeliveryFailed { error: lapin::Error },
+
+    #[snafu(display("Failed to re-open AMQP channel: {}", error))]
+    ReconnectFailed {
+        error: Box<dyn std::error::Error + Send + Sync>,
+    },
 
     #[snafu(display("Received Negative Acknowledgement from AMQP broker."))]
     Nack,
@@ -107,10 +119,32 @@ impl Service<AmqpRequest> for AmqpService {
 
     fn call(&mut self, req: AmqpRequest) -> Self::Future {
         let channel = Arc::clone(&self.channel);
+        let config = self.config.clone();
 
         Box::pin(async move {
+            let need_reconnect = { channel.read().await.status().state() == ChannelState::Error };
+
+            if need_reconnect {
+                info!("Recovering broken channel to AMQP broker.");
+                let mut channel_lock = channel.write().await;
+                let (_, channel) = config
+                    .connect()
+                    .await
+                    .map_err(|error| AmqpError::ReconnectFailed { error })?;
+
+                // Enable confirmations on the channel.
+                channel
+                    .confirm_select(ConfirmSelectOptions::default())
+                    .await
+                    .map_err(|e| AmqpError::ReconnectFailed { error: Box::new(e) })?;
+
+                *channel_lock = channel;
+                info!("AMQP connection recovered.");
+            }
+
+            let channel = channel.read().await;
             let byte_size = req.body.len();
-            let fut = channel
+            let fut = (*channel)
                 .basic_publish(
                     &req.exchange,
                     &req.routing_key,

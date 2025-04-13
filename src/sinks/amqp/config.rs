@@ -2,6 +2,7 @@
 use crate::{amqp::AmqpConfig, sinks::prelude::*};
 use lapin::{types::ShortString, BasicProperties};
 use std::sync::Arc;
+use tokio::sync::RwLock;
 use vector_lib::{
     codecs::TextSerializerConfig,
     internal_event::{error_stage, error_type},
@@ -135,8 +136,9 @@ impl SinkConfig for AmqpSinkConfig {
     }
 }
 
-pub(super) async fn healthcheck(channel: Arc<lapin::Channel>) -> crate::Result<()> {
+pub(super) async fn healthcheck(channel: Arc<RwLock<lapin::Channel>>) -> crate::Result<()> {
     trace!("Healthcheck started.");
+    let channel = channel.read().await;
 
     if !channel.status().connected() {
         return Err(Box::new(std::io::Error::new(
